@@ -2,6 +2,7 @@ package io.quarkiverse.wiremock.devservice;
 
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static io.quarkiverse.wiremock.devservice.WireMockConfigKey.PORT;
+import static io.quarkus.deployment.annotations.ExecutionTime.STATIC_INIT;
 import static java.lang.String.format;
 
 import java.io.Closeable;
@@ -11,10 +12,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
+import io.quarkus.deployment.annotations.Record;
+import io.quarkus.rest.client.reactive.spi.RestClientAnnotationsTransformerBuildItem;
+import org.jboss.jandex.AnnotationInstance;
+import org.jboss.jandex.AnnotationTarget;
+import org.jboss.jandex.AnnotationTransformation;
+import org.jboss.jandex.DotName;
 import org.jboss.logging.Logger;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
@@ -37,6 +48,7 @@ import io.quarkus.deployment.builditem.LaunchModeBuildItem;
 import io.quarkus.deployment.builditem.LiveReloadBuildItem;
 import io.quarkus.deployment.dev.devservices.DevServiceDescriptionBuildItem;
 import io.quarkus.deployment.dev.devservices.GlobalDevServicesConfig;
+import io.quarkus.deployment.pkg.builditem.ArtifactResultBuildItem;
 import io.quarkus.logging.Log;
 import io.quarkus.rest.client.reactive.spi.DevServicesRestClientProxyProvider;
 import io.quarkus.rest.client.reactive.spi.RestClientHttpProxyBuildItem;
@@ -134,6 +146,53 @@ class WireMockServerProcessor {
                 return new CreateResult("localhost", Integer.parseInt(devService.getConfig().get(PORT)), null);
             }
         });
+    }
+
+    @BuildStep(onlyIf = { WireMockServerEnabled.class, GlobalDevServicesConfig.Enabled.class,
+            WireMockProxyRestClientEnabled.class })
+    @Produce(ArtifactResultBuildItem.class)
+    @Record(STATIC_INIT)
+    void recordRestClientInitialOrigin(List<RestClientHttpProxyBuildItem> restClients,
+            RestClientAuthorityRecorder recorder) {
+
+        if (restClients == null || restClients.isEmpty()) {
+            return;
+        }
+
+        for (RestClientHttpProxyBuildItem restClient : restClients) {
+            String url = restClient.getBaseUri();
+            recorder.record(restClient.getClassName(), url);
+        }
+
+    }
+
+    @BuildStep(onlyIf = { WireMockServerEnabled.class, GlobalDevServicesConfig.Enabled.class,
+            WireMockProxyRestClientEnabled.class })
+    @Produce(ArtifactResultBuildItem.class)
+    void configureRestClientProxy(List<RestClientHttpProxyBuildItem> restClients,
+            BuildProducer<RestClientAnnotationsTransformerBuildItem> restClientAnnotationsTransformer,
+            BuildProducer<AdditionalBeanBuildItem> additionalBeans) {
+
+        if (restClients == null || restClients.isEmpty()) {
+            return;
+        }
+
+        additionalBeans.produce(new AdditionalBeanBuildItem(HostHeaderProvider.class));
+
+        restClientAnnotationsTransformer
+                .produce(new RestClientAnnotationsTransformerBuildItem((AnnotationTransformation) (context) -> {
+
+                    if (Objects.requireNonNull(context.declaration().kind()) == AnnotationTarget.Kind.CLASS) {
+                        String className = context.declaration().asClass().name().toString();
+                        Log.info("Registering Host Header Provider for class: " + className);
+                        context.add(AnnotationInstance
+                                .builder(DotName
+                                        .createSimple("org.eclipse.microprofile.rest.client.annotation.RegisterProvider"))
+                                .add("value", HostHeaderProvider.class)
+                                .build());
+                    }
+                }));
+
     }
 
     private static RunningDevService startWireMockDevService(WireMockServerBuildTimeConfig config) {

@@ -1,7 +1,10 @@
 {
   "request": {
     "method": "GET",
-    "url": "/mock-rest-client"
+    "url": "/mock-rest-client",
+    "host": {
+      "equalTo": "imaginary-host.io"
+    }
   },
   "response": {
     "status": 200,
